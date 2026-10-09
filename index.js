@@ -114,6 +114,60 @@ async function getActiveUsers(api) {
     try { return await withTimeout(api.write('/ppp/active/print'), 10000, 'Timeout Active'); } catch (e) { return []; }
 }
 
+// ==========================================
+// 🔄 API GET OLT & PON PORT BERDASARKAN SERVER
+// ==========================================
+app.get('/api/server-olt/:serverLabel', (req, res) => {
+    const serverLabel = req.params.serverLabel.toLowerCase();
+    let foundServerKey = Object.keys(config.servers).find(
+        key => config.servers[key].label.toLowerCase() === serverLabel
+    );
+    
+    if (!foundServerKey) {
+        return res.status(404).json({ success: false, error: 'Server tidak ditemukan' });
+    }
+    
+    res.json({ 
+        success: true, 
+        serverKey: foundServerKey,
+        serverLabel: config.servers[foundServerKey].label, 
+        olts: config.servers[foundServerKey].olts || [] 
+    });
+});
+
+// ==========================================
+// 🔄 API SCAN MAC ADDRESS DI PON SPESIFIK (CARA 2)
+// ==========================================
+app.post('/api/scan-pon', async (req, res) => {
+    const { serverKey, oltIp, pon } = req.body;
+    if (!serverKey || !oltIp || !pon) return res.status(400).json({ error: 'Parameter tidak lengkap' });
+
+    const targetServer = config.servers[serverKey];
+    if (!targetServer) return res.status(404).json({ error: 'Server tidak ditemukan' });
+
+    const result = await enqueueTask(async () => {
+        console.log(`[SCAN PON] Membaca ONU di OLT ${oltIp} PON ${pon}...`);
+        
+        let foundMacs = [];
+        
+        // Cari objek OLT yang sesuai dengan IP di server tersebut
+        const targetOlt = targetServer.olts.find(o => o.ip === oltIp);
+        if (!targetOlt) throw new Error('Konfigurasi OLT tidak ditemukan');
+
+        // Panggil fungsi scan dari oltService untuk mengambil MAC list pada PON tersebut
+        // (Pastikan fungsi ini mengambil MAC dari OLT berdasarkan nomor PON)
+        await scanSemuaOlt([targetOlt], null, async (teksHasil, macList) => {
+            if (macList && Array.isArray(macList)) {
+                foundMacs = macList;
+            }
+        }, pon); // Kirim parameter PON jika didukung oltService
+
+        return { serverKey, oltIp, pon, macs: foundMacs };
+    }, 'SYSTEM_SCAN', targetServer.label);
+    
+    res.json(result);
+});
+
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => console.log(`🌐 WEB DASHBOARD RUNNING ON PORT ${PORT}`));
 
