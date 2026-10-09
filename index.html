@@ -1,438 +1,344 @@
-<!DOCTYPE html>
-<html lang="id" class="dark">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RnBNET - NOC Command Center & EPON NMS</title>
-  
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          colors: {
-            noc: {
-              bg: '#070a11',
-              card: 'rgba(15, 23, 42, 0.85)',
-              border: 'rgba(30, 41, 59, 0.8)',
-              cyan: '#00f0ff',
-              emerald: '#10b981',
-              amber: '#f59e0b',
-              rose: '#f43f5e'
-            }
-          },
-          fontFamily: {
-            sans: ['Inter', 'sans-serif'],
-            mono: ['JetBrains Mono', 'Fira Code', 'monospace']
-          }
-        }
-      }
-    }
-  </script>
+// index.js - Server Backend (Express, Socket.io, SNMP Trap, MikroTik Auto-Sync)
+const path = require('path');
+const express = require('express');
+const http = require('http');
+const dgram = require('dgram');
+const { Server } = require('socket.io');
+const RouterOSAPI = require('node-routeros').RouterOSAPI;
+const config = require('./config');
+const { scanSemuaOlt } = require('./oltService');
 
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: '*' } });
 
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+app.use(express.json());
+app.use(express.static(path.join(__dirname)));
 
-  <style>
-    body {
-      background-color: #070a11;
-      color: #f1f5f9;
-      background-image: 
-        radial-gradient(circle at 15% 15%, rgba(0, 240, 255, 0.04) 0%, transparent 40%),
-        radial-gradient(circle at 85% 85%, rgba(244, 63, 94, 0.04) 0%, transparent 40%);
-    }
+// Route Website
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'dashboard.html')));
+app.get('/nms', (req, res) => res.sendFile(path.join(__dirname, 'nms.html')));
 
-    .glass-card {
-      background: rgba(15, 23, 42, 0.75);
-      backdrop-filter: blur(12px);
-      border: 1px solid rgba(51, 65, 85, 0.5);
-      box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
-    }
+// Receiver SNMP Trap UDP Port 162
+const trapReceiver = dgram.createSocket('udp4');
 
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: #070a11; }
-    ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 4px; }
+trapReceiver.on('listening', () => {
+    console.log(`📡 [NMS TRAP] Receiver SNMP aktif di Port UDP 162`);
+});
 
-    .pulse-glow-green { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); animation: pulseGreen 2s infinite; }
-    @keyframes pulseGreen { 70% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); } }
+trapReceiver.on('message', (msg, rinfo) => {
+    const rawText = msg.toString('utf-8');
+    const rawHex = msg.toString('hex');
+    const oltIp = rinfo.address;
 
-    #leaflet-map { height: 460px; width: 100%; border-radius: 0.75rem; z-index: 1; }
-  </style>
-</head>
-
-<body class="min-h-screen flex flex-col font-sans antialiased selection:bg-cyan-500 selection:text-black">
-
-  <header class="bg-slate-900/80 border-b border-slate-800/80 sticky top-0 z-40 backdrop-blur-xl px-4 lg:px-8 py-3">
-    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 max-w-[1800px] mx-auto">
-      
-      <div class="flex items-center space-x-3.5">
-        <div class="p-2.5 bg-cyan-500/10 border border-cyan-500/30 rounded-2xl text-cyan-400 shadow-[0_0_15px_rgba(0,240,255,0.2)]">
-          <i class="fa-solid fa-tower-observation text-2xl"></i>
-        </div>
-        <div>
-          <div class="flex items-center space-x-2">
-            <h1 class="text-lg font-extrabold text-white tracking-wider">RnBNET NOC MONITOR</h1>
-            <span class="px-2.5 py-0.5 text-[10px] font-extrabold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 rounded-full uppercase tracking-widest">AUTO-SYNC MIKROTIK</span>
-          </div>
-          <p class="text-xs text-slate-400 flex items-center gap-2 mt-0.5 font-mono">
-            <span><i class="fa-solid fa-server text-slate-500"></i> OLT Nodes: <strong class="text-slate-200">Cluster Server RnBNET</strong></span>
-            <span>•</span>
-            <span class="flex items-center gap-1.5 text-emerald-400">
-              <span class="w-2 h-2 rounded-full bg-emerald-500 pulse-glow-green"></span>
-              UDP:162 Active
-            </span>
-          </p>
-        </div>
-      </div>
-
-      <div class="flex items-center gap-4 self-end md:self-auto">
-        <div class="bg-slate-950/80 border border-slate-800 px-4 py-2 rounded-xl text-right">
-          <div id="digital-clock" class="text-sm font-bold font-mono text-cyan-400 tracking-wider">00:00:00 WIB</div>
-          <div id="digital-date" class="text-[10px] text-slate-400 font-medium">Loading Date...</div>
-        </div>
-      </div>
-
-    </div>
-  </header>
-
-  <main class="flex-1 px-4 lg:px-8 py-6 space-y-6 max-w-[1800px] w-full mx-auto">
-
-    <div id="live-alert-ticker" class="hidden glass-card text-amber-200 rounded-2xl p-4 flex items-center justify-between text-xs sm:text-sm animate-pulse border-amber-500/40">
-      <div class="flex items-center gap-3.5">
-        <div class="p-2 bg-amber-500/20 rounded-xl text-amber-400">
-          <i class="fa-solid fa-triangle-exclamation text-lg"></i>
-        </div>
-        <div>
-          <strong id="ticker-title" class="font-extrabold uppercase tracking-wider text-amber-300">TRAP ALARM MASUK:</strong>
-          <span id="ticker-msg" class="ml-2 font-mono text-slate-200">Menunggu event NMS dari OLT...</span>
-        </div>
-      </div>
-      <button onclick="document.getElementById('live-alert-ticker').classList.add('hidden')" class="text-slate-400 hover:text-white p-1">
-        <i class="fa-solid fa-xmark text-lg"></i>
-      </button>
-    </div>
-
-    <!-- METRICS CARDS -->
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-      <div class="glass-card rounded-2xl p-5 relative overflow-hidden">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-bold text-slate-400 uppercase tracking-widest">Total Pelanggan</span>
-          <div class="p-2.5 bg-blue-500/10 text-blue-400 rounded-xl"><i class="fa-solid fa-users text-lg"></i></div>
-        </div>
-        <div class="mt-3 flex items-baseline gap-2">
-          <span id="metric-total" class="text-3xl font-extrabold font-mono text-white">0</span>
-          <span class="text-xs text-slate-400 font-medium">User PPPoE</span>
-        </div>
-        <div class="absolute bottom-0 left-0 right-0 h-1 bg-blue-500/50"></div>
-      </div>
-
-      <div class="glass-card rounded-2xl p-5 relative overflow-hidden">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-bold text-slate-400 uppercase tracking-widest">Online / Normal</span>
-          <div class="p-2.5 bg-emerald-500/10 text-emerald-400 rounded-xl"><i class="fa-solid fa-circle-check text-lg"></i></div>
-        </div>
-        <div class="mt-3 flex items-baseline gap-2">
-          <span id="metric-online" class="text-3xl font-extrabold font-mono text-emerald-400">0</span>
-        </div>
-        <div class="absolute bottom-0 left-0 right-0 h-1 bg-emerald-500"></div>
-      </div>
-
-      <div class="glass-card rounded-2xl p-5 relative overflow-hidden">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-bold text-amber-400 uppercase tracking-widest">⚡ Mati Listrik (Dying Gasp)</span>
-          <div class="p-2.5 bg-amber-500/10 text-amber-400 rounded-xl"><i class="fa-solid fa-plug-circle-xmark text-lg"></i></div>
-        </div>
-        <div class="mt-3 flex items-baseline gap-2">
-          <span id="metric-dying" class="text-3xl font-extrabold font-mono text-amber-400">0</span>
-        </div>
-        <div class="absolute bottom-0 left-0 right-0 h-1 bg-amber-500"></div>
-      </div>
-
-      <div class="glass-card rounded-2xl p-5 relative overflow-hidden">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-bold text-rose-400 uppercase tracking-widest">🚨 Lose Koneksi (LOS)</span>
-          <div class="p-2.5 bg-rose-500/10 text-rose-400 rounded-xl"><i class="fa-solid fa-scissors text-lg"></i></div>
-        </div>
-        <div class="mt-3 flex items-baseline gap-2">
-          <span id="metric-los" class="text-3xl font-extrabold font-mono text-rose-400">0</span>
-        </div>
-        <div class="absolute bottom-0 left-0 right-0 h-1 bg-rose-500"></div>
-      </div>
-    </div>
-
-    <!-- TABS -->
-    <div class="border-b border-slate-800/80 flex items-center space-x-2 overflow-x-auto pb-1">
-      <button id="tab-btn-list" onclick="switchTab('list')" class="px-5 py-3 text-xs font-bold rounded-t-2xl border-b-2 border-cyan-400 text-cyan-400 bg-slate-900/60 flex items-center gap-2.5 transition whitespace-nowrap tracking-wider uppercase">
-        <i class="fa-solid fa-users text-sm"></i> Daftar Pelanggan (MikroTik Sync)
-      </button>
-      <button id="tab-btn-console" onclick="switchTab('console')" class="px-5 py-3 text-xs font-bold rounded-t-2xl border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2.5 transition whitespace-nowrap tracking-wider uppercase">
-        <i class="fa-solid fa-terminal text-sm"></i> Live Trap Feed
-        <span id="badge-trap-count" class="px-2 py-0.5 text-[10px] bg-slate-800 text-slate-300 rounded-full font-mono">0</span>
-      </button>
-      <button id="tab-btn-map" onclick="switchTab('map')" class="px-5 py-3 text-xs font-bold rounded-t-2xl border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2.5 transition whitespace-nowrap tracking-wider uppercase">
-        <i class="fa-solid fa-map-location-dot text-sm"></i> Peta Pelanggan
-      </button>
-    </div>
-
-    <!-- VIEW 1: DAFTAR PELANGGAN -->
-    <div id="view-list" class="space-y-6">
-      <div class="glass-card rounded-2xl p-4 flex flex-col md:flex-row items-center justify-between gap-4">
-        <div class="flex items-center gap-2 bg-slate-950/80 p-1.5 rounded-xl border border-slate-800 w-full md:w-auto">
-          <button onclick="setFilter('ALL')" id="flt-all" class="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-cyan-500 text-black transition">Semua</button>
-          <button onclick="setFilter('ONLINE')" id="flt-online" class="px-3.5 py-1.5 rounded-lg text-xs font-bold text-slate-400 hover:text-emerald-400 transition">Online</button>
-          <button onclick="setFilter('DYING_GASP')" id="flt-dying" class="px-3.5 py-1.5 rounded-lg text-xs font-bold text-slate-400 hover:text-amber-400 transition">Mati Listrik</button>
-          <button onclick="setFilter('LOS')" id="flt-los" class="px-3.5 py-1.5 rounded-lg text-xs font-bold text-slate-400 hover:text-rose-400 transition">Kabel Putus</button>
-        </div>
-
-        <div class="relative w-full md:w-80">
-          <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
-          <input type="text" id="search-input" onkeyup="renderTable()" placeholder="Cari Nama Pelanggan..." class="w-full bg-slate-950/80 border border-slate-800 rounded-xl pl-9 pr-4 py-2 text-xs text-slate-200 focus:outline-none focus:border-cyan-400 font-mono transition">
-        </div>
-      </div>
-
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div class="lg:col-span-8 glass-card rounded-2xl overflow-hidden">
-          <div class="p-4 border-b border-slate-800/80 flex items-center justify-between">
-            <h2 class="text-sm font-extrabold text-slate-200 flex items-center gap-2">
-              <i class="fa-solid fa-list-check text-cyan-400"></i> Status Realtime Pelanggan (MikroTik Sync)
-            </h2>
-            <button onclick="loadCustomersFromMikrotik()" class="text-xs text-cyan-400 hover:text-cyan-300 font-mono flex items-center gap-1">
-              <i class="fa-solid fa-rotate mr-1"></i> Sync Sekarang
-            </button>
-          </div>
-
-          <div class="overflow-x-auto">
-            <table class="w-full text-left text-xs">
-              <thead class="bg-slate-950/80 text-slate-400 border-b border-slate-800 uppercase text-[10px] tracking-wider font-mono">
-                <tr>
-                  <th class="px-4 py-3">Username PPPoE</th>
-                  <th class="px-4 py-3">Server Node</th>
-                  <th class="px-4 py-3">MAC / IP</th>
-                  <th class="px-4 py-3">Status Connection</th>
-                </tr>
-              </thead>
-              <tbody id="customer-table-body" class="divide-y divide-slate-800/60 font-medium font-mono">
-                <!-- Content Populated via JS -->
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="lg:col-span-4 space-y-4">
-          <div class="glass-card rounded-2xl p-4">
-            <h2 class="text-sm font-bold text-slate-200 mb-3 flex items-center gap-2 border-b border-slate-800 pb-2">
-              <i class="fa-solid fa-sitemap text-purple-400"></i> Cluster Server MikroTik
-            </h2>
-            <div id="topology-container" class="space-y-3"></div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- VIEW 2: CONSOLE LOG -->
-    <div id="view-console" class="hidden space-y-4">
-      <div class="glass-card rounded-2xl p-5 font-mono text-xs">
-        <div class="flex items-center justify-between border-b border-slate-800/80 pb-3.5 mb-4">
-          <span class="text-slate-400 font-bold tracking-wider text-[11px] uppercase">/var/log/snmptrapd.log — Realtime Stream</span>
-          <button onclick="clearConsoleLog()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-[11px] font-bold transition">
-            <i class="fa-solid fa-trash-can"></i> Bersihkan Log
-          </button>
-        </div>
-        <div id="console-stream" class="h-[520px] overflow-y-auto space-y-2.5 pr-2">
-          <div class="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80 text-slate-500 text-[11px]">
-            [SYSTEM] Receiver SNMP Trap UDP Port 162 aktif...
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- VIEW 3: MAP VIEW -->
-    <div id="view-map" class="hidden space-y-4">
-      <div class="glass-card rounded-2xl p-5">
-        <div id="leaflet-map"></div>
-      </div>
-    </div>
-
-  </main>
-
-  <div id="toast-container" class="fixed bottom-5 right-5 z-50 space-y-2.5 max-w-sm w-full pointer-events-none"></div>
-
-  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-  <script>
-    let customers = [];
-    let currentFilter = 'ALL';
-    let trapLogsCount = 0;
-    let leafletMap = null;
-
-    function updateClock() {
-      const now = new Date();
-      document.getElementById('digital-clock').innerText = now.toLocaleTimeString('id-ID') + ' WIB';
-      document.getElementById('digital-date').innerText = now.toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' });
-    }
-    setInterval(updateClock, 1000);
-    updateClock();
-
-    // AUTO-SYNC DATA PELANGGAN DARI MIKROTIK
-    async function loadCustomersFromMikrotik() {
-      try {
-        const res = await fetch('/api/customers');
-        const data = await res.json();
-        if (data.success && data.customers) {
-          customers = data.customers;
-          renderTable();
-        }
-      } catch (err) {
-        console.error("Gagal sync dari MikroTik:", err);
-      }
-    }
-
-    function renderTable() {
-      const tbody = document.getElementById('customer-table-body');
-      const search = document.getElementById('search-input').value.toLowerCase();
-      tbody.innerHTML = '';
-
-      let filtered = customers.filter(c => {
-        if (currentFilter === 'ONLINE') return c.status === 'ONLINE';
-        if (currentFilter === 'DYING_GASP') return c.status === 'DYING_GASP';
-        if (currentFilter === 'LOS') return c.status === 'LOS';
-        return true;
-      });
-
-      if (search) {
-        filtered = filtered.filter(c => c.name.toLowerCase().includes(search) || c.node.toLowerCase().includes(search));
-      }
-
-      if (filtered.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="4" class="px-4 py-8 text-center text-slate-500">Tidak ada pelanggan terdeteksi</td></tr>`;
-        return;
-      }
-
-      filtered.forEach(c => {
-        let badge = '<span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">🟢 ONLINE</span>';
-        if (c.status === 'DYING_GASP') {
-          badge = '<span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30">⚡ MATI LISTRIK (Dying Gasp)</span>';
-        } else if (c.status === 'LOS' || c.status === 'OFFLINE') {
-          badge = '<span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/30">🚨 OFFLINE / LOS</span>';
-        }
-
-        const tr = document.createElement('tr');
-        tr.className = "hover:bg-slate-800/40 transition";
-        tr.innerHTML = `
-          <td class="px-4 py-3 font-bold text-slate-100">${c.name}</td>
-          <td class="px-4 py-3 text-slate-400">${c.node}</td>
-          <td class="px-4 py-3 text-slate-500 text-[11px]">${c.mac} (${c.ip})</td>
-          <td class="px-4 py-3">${badge}</td>
-        `;
-        tbody.appendChild(tr);
-      });
-
-      renderMetrics();
-      renderTopology();
-    }
-
-    function renderMetrics() {
-      document.getElementById('metric-total').innerText = customers.length;
-      document.getElementById('metric-online').innerText = customers.filter(c => c.status === 'ONLINE').length;
-      document.getElementById('metric-dying').innerText = customers.filter(c => c.status === 'DYING_GASP').length;
-      document.getElementById('metric-los').innerText = customers.filter(c => c.status === 'LOS' || c.status === 'OFFLINE').length;
-    }
-
-    function renderTopology() {
-      const container = document.getElementById('topology-container');
-      container.innerHTML = '';
-
-      const nodes = [...new Set(customers.map(c => c.node))];
-      nodes.forEach(nodeName => {
-        const list = customers.filter(c => c.node === nodeName);
-        const div = document.createElement('div');
-        div.className = "p-3 rounded-xl bg-slate-950/80 border border-slate-800 text-xs";
-        
-        let itemsHtml = '';
-        list.slice(0, 5).forEach(c => {
-          let dot = c.status === 'ONLINE' ? 'bg-emerald-500' : 'bg-rose-500';
-          itemsHtml += `<div class="flex items-center justify-between py-1 border-b border-slate-800/50">
-            <span class="text-slate-200 font-bold">${c.name}</span>
-            <span class="w-2 h-2 rounded-full ${dot}"></span>
-          </div>`;
+    let oltName = `OLT (${oltIp})`;
+    Object.values(config.servers).forEach(srv => {
+        srv.olts.forEach(olt => {
+            if (olt.ip === oltIp) oltName = `${olt.label} [${srv.label}]`;
         });
-
-        div.innerHTML = `<div class="font-bold text-cyan-400 mb-1.5">${nodeName} (${list.length} User)</div>${itemsHtml}`;
-        container.appendChild(div);
-      });
-    }
-
-    function setFilter(flt) {
-      currentFilter = flt;
-      ['all', 'online', 'dying', 'los'].forEach(f => {
-        document.getElementById(`flt-${f}`).className = "px-3.5 py-1.5 rounded-lg text-xs font-bold text-slate-400 transition";
-      });
-      document.getElementById(`flt-${flt.toLowerCase().replace('_', '')}`).className = "px-3.5 py-1.5 rounded-lg text-xs font-bold bg-cyan-500 text-black transition";
-      renderTable();
-    }
-
-    // REALTIME TRAP EVENT LISTENER
-    const socket = io();
-    socket.on('connect', () => {
-      addConsoleLog('INFO', 'Terhubung ke Backend SNMP Listener');
     });
 
-    socket.on('nms_olt_event', (data) => {
-      addConsoleLog(data.type, `${data.oltName} -> ${data.message}`);
-      
-      // Update status pelanggan jika MAC cocok
-      let match = customers.find(c => c.mac.toLowerCase() === data.macAddress?.toLowerCase());
-      if (match) {
-        match.status = data.type;
-        renderTable();
-      }
+    let type = 'UNKNOWN';
+    let message = 'Status OLT Berubah';
+
+    if (rawText.toLowerCase().includes('dying') || rawText.toLowerCase().includes('gasp') || rawHex.includes('06082b06010401')) {
+        type = 'DYING_GASP';
+        message = '⚡ MATI LISTRIK (Dying Gasp)';
+    } else if (rawText.toLowerCase().includes('laser') || rawText.toLowerCase().includes('los') || rawText.toLowerCase().includes('offline') || rawText.toLowerCase().includes('linkdown')) {
+        type = 'LOS';
+        message = '🚨 LOSE KONEKSI (Laser Out / LOS)';
+    } else if (rawText.toLowerCase().includes('linkup') || rawText.toLowerCase().includes('online')) {
+        type = 'ONLINE';
+        message = '✅ RECOVERY / ONLINE';
+    }
+
+    console.log(`⚠️ [TRAP RECEIVED] ${oltName} -> ${message}`);
+
+    io.emit('nms_olt_event', {
+        oltIp,
+        oltName,
+        type,
+        message,
+        time: new Date().toLocaleTimeString('id-ID')
     });
+});
 
-    function addConsoleLog(type, message) {
-      const consoleBox = document.getElementById('console-stream');
-      const logEntry = document.createElement('div');
-      logEntry.className = "p-3 rounded-xl bg-slate-950/80 border border-slate-800 font-mono text-[11px]";
+try {
+    trapReceiver.bind(162);
+} catch (err) {
+    console.log(`⚠️ Gagal bind port 162 UDP:`, err.message);
+}
 
-      let badge = '<span class="px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 font-bold">[INFO]</span>';
-      if (type === 'DYING_GASP') badge = '<span class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 font-bold">[TRAP: DYING_GASP]</span>';
-      if (type === 'LOS') badge = '<span class="px-2 py-0.5 rounded bg-rose-500/20 text-rose-400 font-bold">[TRAP: LOS]</span>';
+// ==========================================
+// 🔄 API AUTO-SYNC PELANGGAN DARI MIKROTIK
+// ==========================================
+app.get('/api/customers', async (req, res) => {
+    try {
+        let allCustomers = [];
+        
+        for (const srvKey of Object.keys(config.servers)) {
+            try {
+                const { api, targetServer } = await connectMikrotik(srvKey);
+                const secrets = await getUserSecrets(api);
+                const activeUsers = await getActiveUsers(api);
 
-      logEntry.innerHTML = `<div class="text-slate-500 text-[10px] mb-1">${new Date().toLocaleTimeString('id-ID')} WIB</div><div>${badge} ${message}</div>`;
-      consoleBox.prepend(logEntry);
-      trapLogsCount++;
-      document.getElementById('badge-trap-count').innerText = trapLogsCount;
+                secrets.forEach(sec => {
+                    if (sec.name) {
+                        const act = activeUsers.find(a => a.name && a.name.toLowerCase() === sec.name.toLowerCase());
+                        allCustomers.push({
+                            name: sec.name,
+                            node: `${targetServer.label}`,
+                            status: act ? 'ONLINE' : 'OFFLINE',
+                            mac: act ? (act['caller-id'] || sec['caller-id'] || '-') : (sec['caller-id'] || '-'),
+                            ip: act ? act.address : (sec['remote-address'] || 'Dynamic')
+                        });
+                    }
+                });
+
+                await safeCloseMikrotik(api);
+            } catch (err) {
+                console.log(`⚠️ Gagal sync dari MikroTik ${srvKey}:`, err.message);
+            }
+        }
+
+        res.json({ success: true, customers: allCustomers });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
     }
+});
 
-    function clearConsoleLog() {
-      document.getElementById('console-stream').innerHTML = '';
-      trapLogsCount = 0;
-      document.getElementById('badge-trap-count').innerText = '0';
+async function getUserSecrets(api) {
+    try { return await withTimeout(api.write('/ppp/secret/print'), 10000, 'Timeout Secret'); } catch (e) { return []; }
+}
+async function getActiveUsers(api) {
+    try { return await withTimeout(api.write('/ppp/active/print'), 10000, 'Timeout Active'); } catch (e) { return []; }
+}
+
+// ==========================================
+// 🔄 API GET OLT & PON PORT BERDASARKAN SERVER
+// ==========================================
+app.get('/api/server-olt/:serverLabel', (req, res) => {
+    const serverLabel = req.params.serverLabel.toLowerCase();
+    let foundServerKey = Object.keys(config.servers).find(
+        key => config.servers[key].label.toLowerCase() === serverLabel
+    );
+    
+    if (!foundServerKey) {
+        return res.status(404).json({ success: false, error: 'Server tidak ditemukan' });
     }
+    
+    res.json({ 
+        success: true, 
+        serverKey: foundServerKey,
+        serverLabel: config.servers[foundServerKey].label, 
+        olts: config.servers[foundServerKey].olts || [] 
+    });
+});
 
-    function switchTab(tabName) {
-      ['list', 'console', 'map'].forEach(t => document.getElementById(`view-${t}`).classList.add('hidden'));
-      ['list', 'console', 'map'].forEach(t => document.getElementById(`tab-btn-${t}`).classList.remove('border-cyan-400', 'text-cyan-400', 'bg-slate-900/60'));
+// ==========================================
+// 🔄 API SCAN MAC ADDRESS DI PON SPESIFIK (CARA 2)
+// ==========================================
+app.post('/api/scan-pon', async (req, res) => {
+    const { serverKey, oltIp, pon } = req.body;
+    if (!serverKey || !oltIp || !pon) return res.status(400).json({ error: 'Parameter tidak lengkap' });
 
-      document.getElementById(`view-${tabName}`).classList.remove('hidden');
-      document.getElementById(`tab-btn-${tabName}`).classList.add('border-cyan-400', 'text-cyan-400', 'bg-slate-900/60');
+    const targetServer = config.servers[serverKey];
+    if (!targetServer) return res.status(404).json({ error: 'Server tidak ditemukan' });
 
-      if (tabName === 'map' && !leafletMap) {
-        setTimeout(() => {
-          leafletMap = L.map('leaflet-map').setView([-6.567, 107.760], 13);
-          L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(leafletMap);
-        }, 100);
-      }
+    const result = await enqueueTask(async () => {
+        console.log(`[SCAN PON] Membaca ONU di OLT ${oltIp} PON ${pon}...`);
+        
+        let foundMacs = [];
+        
+        // Cari objek OLT yang sesuai dengan IP di server tersebut
+        const targetOlt = targetServer.olts.find(o => o.ip === oltIp);
+        if (!targetOlt) throw new Error('Konfigurasi OLT tidak ditemukan');
+
+        // Panggil fungsi scan dari oltService untuk mengambil MAC list pada PON tersebut
+        // (Pastikan fungsi ini mengambil MAC dari OLT berdasarkan nomor PON)
+        await scanSemuaOlt([targetOlt], null, async (teksHasil, macList) => {
+            if (macList && Array.isArray(macList)) {
+                foundMacs = macList;
+            }
+        }, pon); // Kirim parameter PON jika didukung oltService
+
+        return { serverKey, oltIp, pon, macs: foundMacs };
+    }, 'SYSTEM_SCAN', targetServer.label);
+    
+    res.json(result);
+});
+
+const PORT = process.env.PORT || 8080;
+server.listen(PORT, () => console.log(`🌐 WEB DASHBOARD RUNNING ON PORT ${PORT}`));
+
+function withTimeout(promise, ms, errMsg) {
+    let timeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(errMsg)), ms);
+    });
+    return Promise.race([promise.finally(() => clearTimeout(timeoutId)), timeoutPromise]);
+}
+
+async function connectMikrotik(serverKey) {
+    const targetServer = config.servers[serverKey];
+    if (!targetServer) throw new Error(`Server "${serverKey}" tidak ditemukan`);
+    const api = new RouterOSAPI({
+        host: targetServer.mikrotik.host,
+        port: targetServer.mikrotik.port,
+        user: targetServer.mikrotik.user,
+        password: targetServer.mikrotik.pass,
+        timeout: 15
+    });
+    try {
+        await withTimeout(api.connect(), 15000, `Timeout koneksi ke MikroTik ${targetServer.label}.`);
+        return { api, targetServer };
+    } catch (err) {
+        safeCloseMikrotik(api).catch(() => {});
+        throw new Error(`Gagal konek MikroTik ${targetServer.label}.`);
     }
+}
 
-    window.onload = function() {
-      loadCustomersFromMikrotik();
-      setInterval(loadCustomersFromMikrotik, 30000); // Auto-sync setiap 30 detik
-    };
-  </script>
-</body>
-</html>
+async function getUserFromMikrotik(api, username) {
+    let secrets = await withTimeout(api.write('/ppp/secret/print', [`?name=${username}`]), 25000, 'Timeout Query Secret.');
+    let userObj = secrets.find(x => x.name && x.name.trim().toLowerCase() === username.trim().toLowerCase());
+    if (userObj) return userObj;
+    secrets = await withTimeout(api.write('/ppp/secret/print'), 25000, 'Timeout Query Secret Full Scan.');
+    userObj = secrets.find(x => x.name && x.name.trim().toLowerCase() === username.trim().toLowerCase());
+    if (!userObj) throw new Error(`User "${username}" tidak ditemukan`);
+    return userObj;
+}
+
+async function getActiveUserFromMikrotik(api, username) {
+    let activeUsers = await withTimeout(api.write('/ppp/active/print', [`?name=${username}`]), 25000, 'Timeout Query Active.');
+    let found = activeUsers.find(x => x.name && x.name.trim().toLowerCase() === username.trim().toLowerCase());
+    if (found) return found;
+    activeUsers = await withTimeout(api.write('/ppp/active/print'), 25000, 'Timeout Query Active Full Scan.');
+    return activeUsers.find(x => x.name && x.name.trim().toLowerCase() === username.trim().toLowerCase());
+}
+
+async function safeCloseMikrotik(api) {
+    if (!api) return;
+    try { await withTimeout(api.close(), 5000, 'Close timeout'); } catch (e) {}
+}
+
+const requestQueue = [];
+let isProcessingQueue = false;
+let currentTask = null;
+const queueResults = new Map();
+
+async function enqueueTask(taskFn, username, serverLabel) {
+    const queueId = Date.now() + Math.random().toString(36).substr(2, 9);
+    if (isProcessingQueue) {
+        const position = requestQueue.length + 1;
+        requestQueue.push({ execute: taskFn, username, server: serverLabel, queueId });
+        queueResults.set(queueId, { status: 'pending', position });
+        return { queued: true, position, queueId, estimatedWait: position * 90 };
+    } else {
+        isProcessingQueue = true;
+        currentTask = { username, server: serverLabel };
+        try {
+            const result = await taskFn();
+            queueResults.set(queueId, { status: 'done', data: result });
+            return { success: true, data: result, queueId };
+        } catch (err) {
+            queueResults.set(queueId, { status: 'error', error: err.message });
+            return { success: false, error: err.message, queueId };
+        } finally {
+            currentTask = null;
+            processNextInQueue();
+        }
+    }
+}
+
+async function processNextInQueue() {
+    if (requestQueue.length > 0) {
+        const next = requestQueue.shift();
+        currentTask = { username: next.username, server: next.server };
+        try {
+            const result = await next.execute();
+            queueResults.set(next.queueId, { status: 'done', data: result });
+        } catch (err) {
+            queueResults.set(next.queueId, { status: 'error', error: err.message });
+        } finally {
+            currentTask = null;
+            processNextInQueue();
+        }
+    } else {
+        isProcessingQueue = false;
+    }
+}
+
+app.get('/api/servers', (req, res) => {
+    const servers = Object.keys(config.servers).map(key => ({ key, label: config.servers[key].label }));
+    res.json({ servers });
+});
+
+app.get('/api/queue-result/:queueId', (req, res) => {
+    const { queueId } = req.params;
+    const result = queueResults.get(queueId);
+    if (!result) return res.json({ status: 'not_found' });
+    if (result.status === 'pending') return res.json({ status: 'pending', position: result.position });
+    if (result.status === 'done') { queueResults.delete(queueId); return res.json({ status: 'done', success: true, data: result.data }); }
+    if (result.status === 'error') { queueResults.delete(queueId); return res.json({ status: 'error', success: false, error: result.error }); }
+});
+
+app.post('/api/cek-redaman', async (req, res) => {
+    const { serverKey, username } = req.body;
+    if (!serverKey || !username) return res.status(400).json({ error: 'Server dan username wajib diisi' });
+    let api;
+    const result = await enqueueTask(async () => {
+        const { api: mikrotikApi, targetServer } = await connectMikrotik(serverKey);
+        api = mikrotikApi;
+        const userObj = await getUserFromMikrotik(api, username);
+        let rawMac = userObj['caller-id'] || 'Any';
+        const activeUser = await getActiveUserFromMikrotik(api, username);
+        if (activeUser) rawMac = activeUser['caller-id'] || rawMac;
+        if (!rawMac || rawMac === 'Any') throw new Error('MAC Address tidak terbaca');
+        const mac = rawMac.trim().toLowerCase();
+        let oltText = 'ONU tidak ditemukan di OLT manapun';
+        await scanSemuaOlt(targetServer.olts, mac, async (teksHasil) => { oltText = teksHasil; });
+        return { username, server: targetServer.label, mac, olt: oltText };
+    }, username, config.servers[serverKey]?.label || 'Unknown');
+    
+    await safeCloseMikrotik(api);
+    res.json(result);
+});
+
+app.post('/api/aktivasi', async (req, res) => {
+    const { serverKey, username } = req.body;
+    if (!serverKey || !username) return res.status(400).json({ error: 'Server dan username wajib diisi' });
+    let api;
+    const result = await enqueueTask(async () => {
+        const { api: mikrotikApi, targetServer } = await connectMikrotik(serverKey);
+        api = mikrotikApi;
+        const userObj = await getUserFromMikrotik(api, username);
+        if (userObj.disabled === 'true') {
+            await api.write(['/ppp/secret/enable', `=.id=${userObj['.id']}`]);
+            await new Promise(r => setTimeout(r, 1000));
+            await api.write(['/ppp/secret/set', `=.id=${userObj['.id']}`, '=disabled=no']);
+            await new Promise(r => setTimeout(r, 3000));
+        }
+
+        const activeUser = await getActiveUserFromMikrotik(api, username);
+        let ip = userObj['remote-address'] || 'Dynamic';
+        let rawMac = userObj['caller-id'] || 'Any';
+        const paket = userObj.profile || 'default';
+        if (activeUser) { ip = activeUser.address || ip; rawMac = activeUser['caller-id'] || rawMac; }
+        
+        const response = { username, server: targetServer.label, paket, ip, mac: rawMac, status: 'BERHASIL', olt: null };
+        if (rawMac && rawMac !== 'Any') {
+            const mac = rawMac.trim().toLowerCase(); 
+            response.mac = mac;
+            let oltText = 'ONU tidak ditemukan di OLT manapun';
+            await scanSemuaOlt(targetServer.olts, mac, async (teksHasil) => { oltText = teksHasil; });
+            response.olt = oltText;
+        }
+        return response;
+    }, username, config.servers[serverKey]?.label || 'Unknown');
+    
+    await safeCloseMikrotik(api);
+    res.json(result);
+});
+
+process.on('unhandledRejection', err => console.error('❌ UNHANDLED:', err));
+process.on('uncaughtException', err => { if (err.name === 'RosException' && err.message.includes('Timed out')) return; console.error('❌ UNCAUGHT:', err); });
