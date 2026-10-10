@@ -114,7 +114,7 @@ async function cekRedamanHSAirpoCibarola(oltConfig, mac) {
 }
 
 async function cekRedamanHioso(oltConfig, mac) {
-    let searchMac = mac.substring(0, 16);
+    let searchMac = mac.substring(0, 15);
     if (oltConfig.label.includes('Cibarola') || oltConfig.label.includes('8Pon')) searchMac = mac.substring(0, 15);
     
     const browser = await puppeteer.launch({
