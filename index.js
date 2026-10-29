@@ -20,7 +20,6 @@ app.use(express.static(path.join(__dirname)));
 // ==========================================
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'nms.html')));
 app.get('/nms', (req, res) => res.sendFile(path.join(__dirname, 'nms.html')));
-app.get('/dashboard', (req, res) => res.sendFile(path.join(__dirname, 'dashboard.html')));
 
 // Receiver SNMP Trap UDP Port 162
 const trapReceiver = dgram.createSocket('udp4');
