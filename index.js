@@ -15,9 +15,12 @@ const io = new Server(server, { cors: { origin: '*' } });
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
-// Route Website
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'dashboard.html')));
+// ==========================================
+// 🌐 ROUTING WEB
+// ==========================================
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'nms.html')));
 app.get('/nms', (req, res) => res.sendFile(path.join(__dirname, 'nms.html')));
+app.get('/dashboard', (req, res) => res.sendFile(path.join(__dirname, 'dashboard.html')));
 
 // Receiver SNMP Trap UDP Port 162
 const trapReceiver = dgram.createSocket('udp4');
@@ -136,7 +139,7 @@ app.get('/api/server-olt/:serverLabel', (req, res) => {
 });
 
 // ==========================================
-// 🔄 API SCAN MAC ADDRESS DI PON SPESIFIK (CARA 2)
+// 🔄 API SCAN MAC ADDRESS DI PON SPESIFIK
 // ==========================================
 app.post('/api/scan-pon', async (req, res) => {
     const { serverKey, oltIp, pon } = req.body;
@@ -149,18 +152,14 @@ app.post('/api/scan-pon', async (req, res) => {
         console.log(`[SCAN PON] Membaca ONU di OLT ${oltIp} PON ${pon}...`);
         
         let foundMacs = [];
-        
-        // Cari objek OLT yang sesuai dengan IP di server tersebut
         const targetOlt = targetServer.olts.find(o => o.ip === oltIp);
         if (!targetOlt) throw new Error('Konfigurasi OLT tidak ditemukan');
 
-        // Panggil fungsi scan dari oltService untuk mengambil MAC list pada PON tersebut
-        // (Pastikan fungsi ini mengambil MAC dari OLT berdasarkan nomor PON)
         await scanSemuaOlt([targetOlt], null, async (teksHasil, macList) => {
             if (macList && Array.isArray(macList)) {
                 foundMacs = macList;
             }
-        }, pon); // Kirim parameter PON jika didukung oltService
+        }, pon);
 
         return { serverKey, oltIp, pon, macs: foundMacs };
     }, 'SYSTEM_SCAN', targetServer.label);
@@ -282,6 +281,9 @@ app.get('/api/queue-result/:queueId', (req, res) => {
     if (result.status === 'error') { queueResults.delete(queueId); return res.json({ status: 'error', success: false, error: result.error }); }
 });
 
+// ==========================================
+// 🔄 API CEK REDAMAN (PANCARAN REALTIME SOCKET)
+// ==========================================
 app.post('/api/cek-redaman', async (req, res) => {
     const { serverKey, username } = req.body;
     if (!serverKey || !username) return res.status(400).json({ error: 'Server dan username wajib diisi' });
@@ -296,7 +298,13 @@ app.post('/api/cek-redaman', async (req, res) => {
         if (!rawMac || rawMac === 'Any') throw new Error('MAC Address tidak terbaca');
         const mac = rawMac.trim().toLowerCase();
         let oltText = 'ONU tidak ditemukan di OLT manapun';
-        await scanSemuaOlt(targetServer.olts, mac, async (teksHasil) => { oltText = teksHasil; });
+        
+        await scanSemuaOlt(targetServer.olts, mac, async (teksHasil) => { 
+            oltText = teksHasil; 
+            // Kirim redaman langsung ke socket.io secara realtime begitu ketemu
+            io.emit('realtime_redaman_result', { username, redamanText: teksHasil });
+        });
+        
         return { username, server: targetServer.label, mac, olt: oltText };
     }, username, config.servers[serverKey]?.label || 'Unknown');
     
@@ -304,6 +312,9 @@ app.post('/api/cek-redaman', async (req, res) => {
     res.json(result);
 });
 
+// ==========================================
+// 🔄 API AKTIVASI / BUKA ISOLIR
+// ==========================================
 app.post('/api/aktivasi', async (req, res) => {
     const { serverKey, username } = req.body;
     if (!serverKey || !username) return res.status(400).json({ error: 'Server dan username wajib diisi' });
@@ -330,7 +341,10 @@ app.post('/api/aktivasi', async (req, res) => {
             const mac = rawMac.trim().toLowerCase(); 
             response.mac = mac;
             let oltText = 'ONU tidak ditemukan di OLT manapun';
-            await scanSemuaOlt(targetServer.olts, mac, async (teksHasil) => { oltText = teksHasil; });
+            await scanSemuaOlt(targetServer.olts, mac, async (teksHasil) => { 
+                oltText = teksHasil; 
+                io.emit('realtime_redaman_result', { username, redamanText: teksHasil });
+            });
             response.olt = oltText;
         }
         return response;
