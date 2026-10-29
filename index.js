@@ -16,7 +16,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
 // ==========================================
-// 🌐 ROUTING WEB
+// 🌐 ROUTING WEB (Lurus Hanya ke nms.html)
 // ==========================================
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'nms.html')));
 app.get('/nms', (req, res) => res.sendFile(path.join(__dirname, 'nms.html')));
@@ -167,7 +167,7 @@ app.post('/api/scan-pon', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-server.listen(PORT, () => console.log(`🌐 WEB DASHBOARD RUNNING ON PORT ${PORT}`));
+server.listen(PORT, () => console.log(`🌐 WEB NMS RUNNING ON PORT ${PORT}`));
 
 function withTimeout(promise, ms, errMsg) {
     let timeoutId;
@@ -281,7 +281,7 @@ app.get('/api/queue-result/:queueId', (req, res) => {
 });
 
 // ==========================================
-// 🔄 API CEK REDAMAN (PANCARAN REALTIME SOCKET)
+// 🔄 API CEK REDAMAN (REALTIME SOCKET EMIT)
 // ==========================================
 app.post('/api/cek-redaman', async (req, res) => {
     const { serverKey, username } = req.body;
@@ -300,7 +300,6 @@ app.post('/api/cek-redaman', async (req, res) => {
         
         await scanSemuaOlt(targetServer.olts, mac, async (teksHasil) => { 
             oltText = teksHasil; 
-            // Kirim redaman langsung ke socket.io secara realtime begitu ketemu
             io.emit('realtime_redaman_result', { username, redamanText: teksHasil });
         });
         
